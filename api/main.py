@@ -40,7 +40,7 @@ def verify_key(x_api_key: str = Header(...)):
     if not secrets.compare_digest(x_api_key.encode(), API_KEY.encode()):
         raise HTTPException(status_code=401, detail="Ogiltig API-nyckel")
 
-# ── MODELLER (För att tolka inkommande data) ───────────────────────────────────
+# ── MODELLER ──────────────────────────────────────────────────────────────────
 
 class NyKund(BaseModel):
     namn: str
@@ -57,18 +57,16 @@ class NyOrder(BaseModel):
     produkt_id: int
     antal: int
 
-# ── KUNDER (Exempel på öppna och låsta dörrar) ─────────────────────────────────
+# ── KUNDER ────────────────────────────────────────────────────────────────────
 
 @app.get("/api/kunder")
 def get_kunder():
-    """Hämtar alla kunder (Öppen för alla)"""
     with get_conn() as con:
         rows = con.execute("SELECT id, namn, email, telefon FROM lake.kunder ORDER BY id").fetchall()
     return [{"id": r[0], "namn": r[1], "email": r[2], "telefon": r[3]} for r in rows]
 
 @app.post("/api/kunder", status_code=201, dependencies=[Depends(verify_key)])
 def ny_kund(kund: NyKund):
-    """Skapar en ny kund (Kräver API-nyckel)"""
     with get_conn() as con:
         nid = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM lake.kunder").fetchone()[0]
         con.execute("INSERT INTO lake.kunder VALUES (?, ?, ?, ?)", [nid, kund.namn, kund.email, kund.telefon])
@@ -76,31 +74,74 @@ def ny_kund(kund: NyKund):
 
 @app.delete("/api/kunder/{kund_id}", dependencies=[Depends(verify_key)])
 def radera_kund(kund_id: int):
-    """Tar bort en kund (Kräver API-nyckel)"""
     with get_conn() as con:
         con.execute("DELETE FROM lake.kunder WHERE id = ?", [kund_id])
     return {"deleted": kund_id}
 
-# ── DATASETS & UPLOAD (Avancerad hantering) ───────────────────────────────────
+# ── PRODUKTER (Dessa saknades i din förra version!) ──────────────────────────
+
+@app.get("/api/produkter")
+def get_produkter():
+    """Hämtar alla produkter"""
+    with get_conn() as con:
+        rows = con.execute("SELECT id, namn, pris, lagersaldo FROM lake.produkter ORDER BY id").fetchall()
+    return [{"id": r[0], "namn": r[1], "pris": r[2], "lagersaldo": r[3]} for r in rows]
+
+@app.post("/api/produkter", status_code=201, dependencies=[Depends(verify_key)])
+def ny_produkt(produkt: NyProdukt):
+    """Skapar en ny produkt"""
+    with get_conn() as con:
+        nid = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM lake.produkter").fetchone()[0]
+        con.execute("INSERT INTO lake.produkter VALUES (?, ?, ?, ?)", [nid, produkt.namn, produkt.pris, produkt.lagersaldo])
+    return {"id": nid, "namn": produkt.namn, "pris": produkt.pris}
+
+@app.delete("/api/produkter/{produkt_id}", dependencies=[Depends(verify_key)])
+def radera_produkt(produkt_id: int):
+    """Tar bort en produkt"""
+    with get_conn() as con:
+        con.execute("DELETE FROM lake.produkter WHERE id = ?", [produkt_id])
+    return {"deleted": produkt_id}
+
+# ── ORDRAR (Dessa saknades också!) ──────────────────────────────────────────
+
+@app.get("/api/ordrar")
+def get_ordrar():
+    """Hämtar alla ordrar med kund- och produktnamn"""
+    with get_conn() as con:
+        rows = con.execute("""
+            SELECT o.id, k.namn, p.namn, o.antal, o.skapad
+            FROM lake.ordrar o
+            JOIN lake.kunder k    ON k.id = o.kund_id
+            JOIN lake.produkter p ON p.id = o.produkt_id
+            ORDER BY o.id
+        """).fetchall()
+    return [{"id": r[0], "kund": r[1], "produkt": r[2], "antal": r[3], "skapad": str(r[4])} for r in rows]
+
+@app.post("/api/ordrar", status_code=201, dependencies=[Depends(verify_key)])
+def ny_order(order: NyOrder):
+    """Skapar en ny order"""
+    with get_conn() as con:
+        nid = con.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM lake.ordrar").fetchone()[0]
+        con.execute("INSERT INTO lake.ordrar (id, kund_id, produkt_id, antal) VALUES (?, ?, ?, ?)",
+                    [nid, order.kund_id, order.produkt_id, order.antal])
+    return {"id": nid, "kund_id": order.kund_id, "produkt_id": order.produkt_id, "antal": order.antal}
+
+# ── DATASETS & UPLOAD ─────────────────────────────────────────────────────────
 
 @app.get("/api/datasets")
 def lista_datasets():
-    """Listar alla tabeller som finns i din Data Lake"""
     with get_conn() as con:
         tabeller = con.execute("SELECT table_name FROM duckdb_tables() WHERE database_name = 'lake'").fetchall()
     return [{"namn": r[0]} for r in tabeller]
 
 @app.post("/api/datasets/upload", status_code=201, dependencies=[Depends(verify_key)])
 async def ladda_upp(fil: UploadFile = File(...), tabellnamn: str = Form(...)):
-    """Laddar upp en CSV/Parquet-fil och skapar en tabell i molnet"""
     if not tabellnamn.isidentifier():
         raise HTTPException(status_code=400, detail="Ogiltigt tabellnamn")
-    
     suffix = ".csv" if fil.filename.endswith(".csv") else ".parquet"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(await fil.read())
         tmp_path = tmp.name
-    
     try:
         with get_conn() as con:
             if suffix == ".csv":
@@ -108,12 +149,11 @@ async def ladda_upp(fil: UploadFile = File(...), tabellnamn: str = Form(...)):
             else:
                 con.execute(f"CREATE TABLE lake.{tabellnamn} AS SELECT * FROM read_parquet(?)", [tmp_path])
     finally:
-        os.unlink(tmp_path) # Tar bort den tillfälliga filen efteråt
+        os.unlink(tmp_path)
     return {"namn": tabellnamn, "status": "skapad i Data Lake"}
 
-# ── HÄLSOKONTROLL (För KTH Cloud) ─────────────────────────────────────────────
+# ── HEALTH ────────────────────────────────────────────────────────────────────
 
 @app.get("/healthz")
 def health():
-    """Endpoint som talar om för molnet att appen mår bra"""
     return {"status": "ok"}
