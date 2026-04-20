@@ -2,7 +2,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-# Installera DuckDB-extensions i förväg för snabbare start
+# Installera tillägg i förväg
 RUN python3 -c "import duckdb; con = duckdb.connect(); \
     con.execute('INSTALL ducklake'); \
     con.execute('INSTALL postgres'); \

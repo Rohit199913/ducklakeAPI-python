@@ -1,0 +1,36 @@
+name: Build and push Docker image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - api/** # Roboten startar bara om du ändrat något inuti api-mappen
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # Krävs för att få ladda upp till GitHubs bibliotek
+
+    steps:
+      - uses: actions/checkout@v4 # Hämtar din kod
+
+      - name: Set lowercase image name
+        # Förvandlar repo-namnet till små bokstäver (t.ex. DuckLakeAPI blir ducklakeapi) 
+        # eftersom Docker-bibliotek inte tillåter stora bokstäver
+        run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]'):latest" >> $GITHUB_ENV
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} # Automatisk nyckel från GitHub
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./api # Berättar att Dockerfilen finns inuti api-mappen
+          push: true
+          tags: ${{ env.IMAGE }}
