@@ -1,3 +1,24 @@
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.security import APIKeyHeader
+from pydantic import BaseModel
+from database import get_conn, init_db
+
+app = FastAPI()
+
+# Initiera databasen vid start
+@app.on_event("startup")
+def startup_event():
+    init_db()
+
+# API-nyckel för skydd
+API_KEY = "your-secret-api-key"  # Byt ut mot en säker nyckel eller från env
+api_key_header = APIKeyHeader(name="X-API-Key")
+
+def verify_key(api_key: str = Depends(api_key_header)):
+    if api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    return api_key
+
 class NyVader(BaseModel):
     datum: str
     stad: str
