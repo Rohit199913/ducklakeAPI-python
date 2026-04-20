@@ -1,46 +1,60 @@
-from fastapi import FastAPI, Depends, HTTPException
-from fastapi.security import APIKeyHeader
+import os
+import secrets
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Header, HTTPException, Depends
 from pydantic import BaseModel
 from database import get_conn, init_db
 
-app = FastAPI()
+API_KEY = os.getenv("API_KEY", "your-secret-api-key")  # Byt ut mot en säker nyckel
 
-# Initiera databasen vid start
-@app.on_event("startup")
-def startup_event():
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     init_db()
+    yield
 
-# API-nyckel för skydd
-API_KEY = "your-secret-api-key"  # Byt ut mot en säker nyckel eller från env
-api_key_header = APIKeyHeader(name="X-API-Key")
 
-def verify_key(api_key: str = Depends(api_key_header)):
-    if api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API Key")
-    return api_key
+app = FastAPI(title="DuckLake Weather API", lifespan=lifespan)
+
+
+def verify_key(x_api_key: str = Header(...)):
+    if not secrets.compare_digest(x_api_key.encode(), API_KEY.encode()):
+        raise HTTPException(status_code=401, detail="Ogiltig API-nyckel")
+
+
+# ── MODELS ────────────────────────────────────────────────────────────────────
 
 class NyVader(BaseModel):
     datum: str
     stad: str
     temperatur: float
 
+
+# ── VÄDER ────────────────────────────────────────────────────────────────────
+
 @app.get("/api/vader")
 def get_vader():
-    con = get_conn()
-    rows = con.execute("SELECT datum, stad, temperatur FROM lake.vader ORDER BY datum").fetchall()
-    con.close()
+    with get_conn() as con:
+        rows = con.execute("SELECT datum, stad, temperatur FROM lake.vader ORDER BY datum").fetchall()
     return [{"datum": str(r[0]), "stad": r[1], "temperatur": r[2]} for r in rows]
+
 
 @app.post("/api/vader", status_code=201, dependencies=[Depends(verify_key)])
 def ny_vader(v: NyVader):
-    con = get_conn()
-    con.execute("INSERT INTO lake.vader VALUES (?, ?, ?)", [v.datum, v.stad, v.temperatur])
-    con.close()
+    with get_conn() as con:
+        con.execute("INSERT INTO lake.vader VALUES (?, ?, ?)", [v.datum, v.stad, v.temperatur])
     return {"datum": v.datum, "stad": v.stad, "temperatur": v.temperatur}
+
 
 @app.delete("/api/vader/{datum}", dependencies=[Depends(verify_key)])
 def radera_vader(datum: str):
-    con = get_conn()
-    con.execute("DELETE FROM lake.vader WHERE datum = ?", [datum])
-    con.close()
+    with get_conn() as con:
+        con.execute("DELETE FROM lake.vader WHERE datum = ?", [datum])
     return {"deleted": datum}
+
+
+# ── HEALTH ────────────────────────────────────────────────────────────────────
+
+@app.get("/healthz")
+def health():
+    return {"status": "ok"}
