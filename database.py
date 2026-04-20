@@ -50,3 +50,23 @@ def get_conn():
         AS lake (DATA_PATH '{data_path}')
     """)
     return con
+
+def init_db():
+    con = get_conn()
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS lake.vader (
+            datum DATE,
+            stad VARCHAR,
+            temperatur DOUBLE
+        )
+    """)
+      # Här lägger du seed-data-koden
+    _con = get_conn()  # Eller använd samma 'con' istället för '_con' för att undvika extra anslutning
+    if _con.execute("SELECT COUNT(*) FROM lake.vader").fetchone()[0] == 0:
+        _con.executemany("INSERT INTO lake.vader VALUES (?, ?, ?)", [
+            ("2024-01-01", "Stockholm", -2.0),
+            ("2024-07-01", "Göteborg",  22.5),
+        ])
+    _con.close()
+    con.close()
+    
